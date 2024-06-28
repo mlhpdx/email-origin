@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>email_origin</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Amazon.Lambda.Core" Version="2.2.0" />
+    <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.3" />
+    <PackageReference Include="AWSSDK.S3" Version="3.7.308.8" />
+    <PackageReference Include="AWSSDK.SimpleEmail" Version="3.7.300.108" />
+    <PackageReference Include="AWSSDK.XRay" Version="3.7.300.99" />
+    <PackageReference Include="AWSXRayRecorder.Handlers.AwsSdk" Version="2.12.0" />
+    <PackageReference Include="AWSXRayRecorder.Handlers.System.Net" Version="2.11.0" />
+  </ItemGroup>
+
+</Project>

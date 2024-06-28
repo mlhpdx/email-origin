@@ -1,0 +1,342 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": [
+    "ForEach",
+    "AWS::Serverless-2016-10-31"
+  ],
+  "Description": "Setup outgoing email orgination with support for templates and attachments as well as distributed filtering rules (async veto).",
+  "Parameters": {
+    "ReplicaRegions": {
+      "Type": "CommaDelimitedList",
+      "Default": "us-west-2,eu-west-1,us-east-1"
+    }
+  },
+  "Resources": {
+    "Table": {
+      "Type": "AWS::DynamoDB::GlobalTable",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "TimeToLiveSpecification": {
+          "AttributeName" : "TTL",
+          "Enabled" : true
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1SK",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
+        ],
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "GSI1",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI1PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI1SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "Replicas": [
+          {
+            "Region": "%v",
+            "PointInTimeRecoverySpecification": {
+              "PointInTimeRecoveryEnabled": true
+            },
+            "ForEach": "ReplicaRegions"
+          }
+        ]
+      }
+    },
+    "ApiGatewayIntegrationRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": {
+                  "Fn::Sub": "apigateway.amazonaws.com"
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ]
+      }
+    },
+    "ProcessorLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": {
+                  "Fn::Sub": "lambda.amazonaws.com"
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ],
+        "ManagedPolicyArns": [
+          {
+            "Ref": "LoggerPolicy"
+          },
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ]
+      }
+    },
+    "SenderLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": {
+                  "Fn::Sub": "lambda.amazonaws.com"
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ],
+        "ManagedPolicyArns": [
+          {
+            "Ref": "LoggerPolicy"
+          },
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ]
+      }
+    },
+    "ApiHandlerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": {
+                  "Fn::Sub": "states.amazonaws.com"
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ],
+        "ManagedPolicyArns": [
+          {
+            "Ref": "LoggerPolicy"
+          },
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ]
+      }
+    },
+    "WorkerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": {
+                  "Fn::Sub": "states.amazonaws.com"
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ],
+        "ManagedPolicyArns": [
+          {
+            "Ref": "LoggerPolicy"
+          },
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ]
+      }
+    },
+    "SenderRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service":  "states.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ],
+        "ManagedPolicyArns": [
+          {
+            "Ref": "LoggerPolicy"
+          },
+          "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+        ]
+      }
+    },
+    "EventBridgeRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [ ]
+      }
+    },
+    "LoggerPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:CreateLogDelivery",
+                "logs:GetLogDelivery",
+                "logs:UpdateLogDelivery",
+                "logs:DeleteLogDelivery",
+                "logs:ListLogDeliveries",
+                "logs:PutLogEvents",
+                "logs:PutResourcePolicy",
+                "logs:DescribeResourcePolicies",
+                "logs:DescribeLogGroups"
+              ],
+              "Resource": {
+                "Fn::Sub": "*"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+		"GlobalTableName": {
+			"Description": "DDB Global Table for storing outbound email meta data (no PII allowed).",
+			"Value": {
+				"Ref":"Table"
+			}
+		},
+		"GlobalTableArn": {
+			"Description": "DDB Global Table ARN (only use when you need the table in the region originaly deployed, not the regional replica)",
+			"Value": {
+				"Fn::GetAtt": [ "Table", "Arn" ]
+			}
+		},
+		"ApiGatewayIntegrationRoleArn": {
+			"Description": "Role Arn for use with API Gateway method integrations that proxy DDB and SNS services.",
+			"Value": {
+				"Fn::GetAtt": [ "ApiGatewayIntegrationRole", "Arn" ]
+			}
+		},
+		"ProcessorLambdaRoleArn": {
+			"Description": "Lambda Role Arn",
+			"Value": {
+				"Fn::GetAtt": [ "ProcessorLambdaRole", "Arn" ]
+			}
+		},
+		"SenderLambdaRoleArn": {
+			"Description": "Lambda Role Arn",
+			"Value": {
+				"Fn::GetAtt": [ "SenderLambdaRole", "Arn" ]
+			}
+		},		
+    "ApiHandlerRoleArn": {
+			"Description": "Role Arn for ApiHandler state machine.",
+			"Value": {
+				"Fn::GetAtt": [ "ApiHandlerRole", "Arn" ]
+			}
+		},
+		"WorkerRoleArn": {
+			"Description": "Role Arn for Worker (processor) state machine.",
+			"Value": {
+				"Fn::GetAtt": [ "WorkerRole", "Arn" ]
+			}
+		},
+		"SenderRoleArn": {
+			"Description": "Role Arn for email Sender state machine.",
+			"Value": {
+				"Fn::GetAtt": [ "SenderRole", "Arn" ]
+			}
+		},
+    "EventBridgeRoleArn": {
+      "Description": "Role Arn for EventBridge to re-start crashed state machines.",
+      "Value": {
+        "Fn::GetAtt": [ "EventBridgeRole", "Arn" ]
+      }
+    }
+	}
+}

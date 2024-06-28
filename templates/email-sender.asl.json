@@ -1,0 +1,275 @@
+{
+  "Comment": "Gets ready (processed) emails from SQS and sends them (if not cancelled) via SES.",
+  "StartAt": "ReceiveMessage",
+  "States": {
+    "ReceiveMessage": {
+      "Type": "Task",
+      "Parameters": {
+        "QueueUrl": "${SenderQueueUrl}",
+        "MaxNumberOfMessages": 10,
+        "WaitTimeSeconds": 20
+      },
+      "Resource": "arn:aws:states:::aws-sdk:sqs:receiveMessage",
+      "Next": "Were any Messages Received?",
+      "ResultPath": "$.sqs"
+    },
+    "Were any Messages Received?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.sqs.Messages[0]",
+          "IsPresent": true,
+          "Next": "Process Each Ready Email"
+        }
+      ],
+      "Default": "Self-Invoke to Continue Processing Messages"
+    },
+    "Process Each Ready Email": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Get Email Metadata (Status)",
+        "States": {
+          "Get Email Metadata (Status)": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Parameters": {
+              "TableName": "${Table}",
+              "Key": {
+                "PK": {
+                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
+                },
+                "SK": {
+                  "S": "email"
+                }
+              }
+            },
+            "Next": "Has the Email been Cancelled?",
+            "ResultPath": "$.ddb"
+          },
+          "Has the Email been Cancelled?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.ddb.Item.status.S",
+                "StringMatches": "cancelled*",
+                "Next": "Notify Cancelled"
+              }
+            ],
+            "Default": "Has it Already Been Sent?"
+          },
+          "Has it Already Been Sent?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.ddb.Item.status.S",
+                "StringMatches": "sent*",
+                "Next": "Notify Sent",
+                "Comment": "Better to repeat this notification than to skip it"
+              }
+            ],
+            "Default": "Send via Lambda (Stream from S3)"
+          },
+          "Notify Cancelled/Failed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+              "TopicArn": "${EmailCancelledTopicArn}",
+              "Message": {
+                "id.$": "$.event.id",
+                "status": "cancelled_failed"
+              }
+            },
+            "ResultPath": null,
+            "Next": "DeleteMessage"
+          },
+          "Notify Cancelled": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+              "TopicArn": "${EmailCancelledTopicArn}",
+              "Message": {
+                "id.$": "$.event.id",
+                "status": "cancelled"
+              }
+            },
+            "ResultPath": null,
+            "Next": "DeleteMessage"
+          },
+          "Send via Lambda (Stream from S3)": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "Payload": {
+                "id.$": "$.event.id",
+                "bucket.$": "$.event.bucket",
+                "key.$": "$.event.key"
+              },
+              "FunctionName": "${EmailSenderLambdaArn}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "Mark as Sent",
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "Mark as Failed",
+                "ResultPath": "$.error"
+              }
+            ],
+            "ResultPath": null
+          },
+          "Mark as Failed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+              "TableName": "${Table}",
+              "Key": {
+                "PK": {
+                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
+                },
+                "SK": {
+                  "S": "email"
+                }
+              },
+              "UpdateExpression": "SET #status = :status",
+              "ExpressionAttributeNames": {
+                "#status": "status"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {
+                  "S": "failed"
+                }
+              }
+            },
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "Notify Cancelled/Failed"
+              }
+            ],
+            "ResultPath": null,
+            "Next": "Notify Cancelled/Failed"
+          },
+          "Mark as Sent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+              "TableName": "${Table}",
+              "Key": {
+                "PK": {
+                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
+                },
+                "SK": {
+                  "S": "email"
+                }
+              },
+              "UpdateExpression": "SET #status = :status",
+              "ExpressionAttributeNames": {
+                "#status": "status"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {
+                  "S": "sent"
+                }
+              }
+            },
+            "Next": "Notify Sent",
+            "ResultPath": "$.lambda",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "BackoffRate": 2,
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "Comment": "The email sent, so failing to record it in DDB still requires telling the clients."
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "Notify Sent"
+              }
+            ]
+          },
+          "Notify Sent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+              "TopicArn": "${EmailSentTopicArn}",
+              "Message": {
+                "id.$": "$.event.id",
+                "status": "sent"
+              }
+            },
+            "ResultPath": null,
+            "Next": "DeleteMessage"
+          },
+          "DeleteMessage": {
+            "Type": "Task",
+            "Parameters": {
+              "QueueUrl": "${SenderQueueUrl}",
+              "ReceiptHandle.$": "$.handle"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:sqs:deleteMessage",
+            "End": true,
+            "ResultPath": null
+          }
+        }
+      },
+      "Next": "Self-Invoke to Continue Processing Messages",
+      "ItemsPath": "$.sqs.Messages",
+      "ItemSelector": {
+        "handle.$": "$$.Map.Item.Value.ReceiptHandle",
+        "event.$": "States.StringToJson($$.Map.Item.Value.Body)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Ouch"
+        }
+      ],
+      "ResultPath": "$.map"
+    },
+    "Ouch": {
+      "Type": "Pass",
+      "Comment": "Wait? Log? This is a last-chance handler called when something inside the map went wrong but wasn't otherwise handled.",
+      "Next": "Self-Invoke to Continue Processing Messages"
+    },
+    "Self-Invoke to Continue Processing Messages": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Parameters": {
+        "Input": {
+          "StatePayload": "Continuation of Worker.",
+          "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+        },
+        "StateMachineArn.$": "$$.StateMachine.Id"
+      },
+      "End": true
+    }
+  }
+}

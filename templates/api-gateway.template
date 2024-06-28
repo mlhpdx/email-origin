@@ -1,0 +1,235 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "A service component for making controlled requests to OpenAI's Cloud API.",
+  "Parameters": {
+    "ApiGatewayIntegrationRoleArn": {
+      "Type": "String"
+    },
+    "Table": {
+      "Type": "String"
+    },
+    "ApiHandlerStateMachineArn": {
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "Api": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": "Email Sending API (IAM authorized, internal use only)",
+        "Description": "Regional API for sending email. Only supports IAM authentication (for internal use), could be PRIVATE but that would require a VPC.",
+        "EndpointConfiguration": {
+          "Types": [
+            "REGIONAL"
+          ]
+        }
+      }
+    },
+    "Email": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "Api",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "email",
+        "RestApiId": {
+          "Ref": "Api"
+        }
+      }
+    },
+    "EmailPost": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ResourceId": {
+          "Ref": "Email"
+        },
+        "HttpMethod": "POST",
+        "AuthorizationType": "AWS_IAM",
+        "ApiKeyRequired": false,
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ],
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Credentials": { "Ref": "ApiGatewayIntegrationRoleArn" },
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:aws:apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":states:action/StartSyncExecution"
+              ]
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Sub": [
+                "{\"input\": \"$util.escapeJavaScript($input.json('$'))\",\"stateMachineArn\": \"${arn}\"}",
+                {
+                  "arn": {
+                    "Ref": "ApiHandlerStateMachineArn"
+                  }
+                }
+              ]
+            }
+          },
+          "PassthroughBehavior": "NEVER",
+          "TimeoutInMillis": 10000,
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/json": "$util.parseJson($input.json('$.output'))"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "EmailById": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ParentId": {
+          "Ref": "Email"
+        },
+        "PathPart": "{email_id}"
+      }
+    },
+    "EmailByIdDelete": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ResourceId": {
+          "Ref": "EmailById"
+        },
+        "HttpMethod": "DELETE",
+        "AuthorizationType": "AWS_IAM",
+        "ApiKeyRequired": false,
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ],
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Credentials": { "Ref": "ApiGatewayIntegrationRoleArn" },
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:aws:apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":dynamodb:action/UpdateItem"
+              ]
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Sub": [
+                "{\"Key\": { \"PK\": { \"S\": \"EMAIL|$util.escapeJavaScript($input.params('email_id'))\" }, \"SK\": { \"S\": \"email\" } }, \"ExpressionAttributeValues\": { \":updated\": { \"S\": \"$context.requestTimeEpoch\" }, \":queued\": { \"S\": \"queued\" }, \":cancelled\": { \"S\": \"cancelled\" } }, \"ExpressionAttributeNames\": {\"#status\":\"status\",\"#updated\":\"updated_on\"}, \"UpdateExpression\": \"SET #status = :cancelled, #updated = :updated\", \"ConditionExpression\":\"#status = :queued\", \"TableName\": \"${table}\", \"ReturnValuesOnConditionCheckFailure\": \"ALL_OLD\"}",
+                {
+                  "table": {
+                    "Ref": "Table"
+                  }
+                }
+              ]
+            }
+          },
+          "PassthroughBehavior": "NEVER",
+          "TimeoutInMillis": 10000,
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/json": "$input.json('$')"
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    "GatewayV1": {
+      "DependsOn": [
+        "EmailPost"
+      ],
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "CacheClusterEnabled": false,
+        "DeploymentId": {
+          "Ref": "GatewayDeployment1"
+        },
+        "Description": "The one and only stage.",
+        "MethodSettings": [
+          {
+            "DataTraceEnabled": true,
+            "HttpMethod": "*",
+            "LoggingLevel": "INFO",
+            "MetricsEnabled": true,
+            "ResourcePath": "/*",
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10
+          }
+        ],
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "StageName": "v1",
+        "TracingEnabled": true
+      }
+    },
+    "GatewayDeployment1": {
+      "DependsOn": [
+        "EmailPost"
+      ],
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "Description": "Initial deployment.",
+        "RestApiId": {
+          "Ref": "Api"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ApiId": {
+      "Description": "API Gateway Id",
+      "Value": {
+        "Fn::Sub": "${Api}"
+      }
+    },
+    "EndpointDomain": {
+      "Description": "Gateway Domain",
+      "Value": {
+        "Fn::Sub": "${Api}.execute-api.${AWS::Region}.amazonaws.com"
+      }
+    }
+  }
+}

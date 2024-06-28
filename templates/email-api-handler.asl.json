@@ -1,0 +1,207 @@
+{
+  "Comment": "Called by API Gateway to handle requests to queue (send) an email. Validates request, writes metadata to DDB, puts the request in S3.",
+  "StartAt": "Is the Input Valid?",
+  "States": {
+    "Is the Input Valid?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Or": [
+            {
+              "Variable": "$.from",
+              "IsPresent": false
+            },
+            {
+              "Variable": "$.to",
+              "IsPresent": false
+            },
+            {
+              "Variable": "$.subject",
+              "IsPresent": false
+            },
+            {
+              "Variable": "$.body",
+              "IsPresent": false
+            },
+            {
+              "And": [
+                {
+                  "Variable": "$.body.text",
+                  "IsPresent": false
+                },
+                {
+                  "Variable": "$.body.html",
+                  "IsPresent": false
+                },
+                {
+                  "Variable": "$.body",
+                  "IsString": false
+                }
+              ]
+            }
+          ],
+          "Next": "Invalid Input Response"
+        }
+      ],
+      "Default": "Re-format Input"
+    },
+    "Re-format Input": {
+      "Type": "Pass",
+      "Next": "Calculate Hash",
+      "Parameters": {
+        "input.$": "$"
+      }
+    },
+    "Invalid Input Response": {
+      "Type": "Pass",
+      "End": true,
+      "Parameters": {
+        "status": 400,
+        "error": "Invalid request."
+      }
+    },
+    "Calculate Hash": {
+      "Type": "Pass",
+      "Next": "Append S3 Key",
+      "Parameters": {
+        "input.$": "$.input",
+        "id.$": "States.UUID()",
+        "hash.$": "States.Hash(States.JsonToString($.input), 'SHA-256')"
+      }
+    },
+    "Append S3 Key": {
+      "Type": "Pass",
+      "Next": "Append S3 URI",
+      "Parameters": {
+        "input.$": "$.input",
+        "id.$": "$.id",
+        "hash.$": "$.hash",
+        "key.$": "States.Format('outbox/{}.queued.json',$.id)"
+      }
+    },
+    "Append S3 URI": {
+      "Type": "Pass",
+      "Next": "Track Global Email Metadata (No PII)",
+      "Parameters": {
+        "input.$": "$.input",
+        "hash.$": "$.hash",
+        "id.$": "$.id",
+        "key.$": "$.key",
+        "uri.$": "States.Format('s3://${Bucket}/{}',$.key)"
+      }
+    },
+    "Track Global Email Metadata (No PII)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${Table}",
+        "Item": {
+          "PK": {
+            "S.$": "States.Format('EMAIL|{}',$.id)"
+          },
+          "SK": {
+            "S": "email"
+          },
+          "hash.$": "$.hash",
+          "sent_from_region": "${AWSRegion}",
+          "s3_uri.$": "$.uri",
+          "created_on.$": "$$.Execution.StartTime",
+          "status": "queued"
+        }
+      },
+      "Next": "Store in-Region for Processing",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "BackoffRate": 2,
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Runtime Error Response",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.ddb"
+    },
+    "Runtime Error Response": {
+      "Type": "Pass",
+      "End": true,
+      "Parameters": {
+        "status": 500,
+        "error.$": "$.error"
+      }
+    },
+    "Store in-Region for Processing": {
+      "Type": "Task",
+      "Parameters": {
+        "Body": {
+          "email.$": "$.input",
+          "id.$": "$.id",
+          "hash.$": "$.hash"
+        },
+        "Bucket": "${Bucket}",
+        "Key.$": "$.key"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Next": "Send Notification of New Email",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "BackoffRate": 2,
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Runtime Error Response"
+        }
+      ],
+      "ResultPath": "$.s3"
+    },
+    "Send Notification of New Email": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${QueueTopicArn}",
+        "Message": {
+          "id.$": "$.id",
+          "hash.$": "$.hash",
+          "location": {
+            "bucket": "${Bucket}",
+            "key.$": "$.key"
+          },
+          "request": {
+            "from.$": "$.input.from",
+            "to.$": "$.input.to",
+            "subject.$": "$.input.subject"
+          }
+        }
+      },
+      "Next": "Success Response with ID",
+      "ResultPath": "$.sns"
+    },
+    "Success Response with ID": {
+      "Type": "Pass",
+      "End": true,
+      "Parameters": {
+        "status": 200,
+        "id.$": "$.id"
+      }
+    }
+  },
+  "TimeoutSeconds": 10
+}

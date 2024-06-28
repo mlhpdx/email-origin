@@ -1,0 +1,849 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": [
+    "ForEach",
+    "AWS::Serverless-2016-10-31"
+  ],
+  "Description": "Setup SES email origination, with templates and attachments (as well as distributed email cancellation/veto).",
+  "Parameters": {
+    "ApiGatewayIntegrationRoleArn": {
+      "Type": "String"
+    },
+    "ApiHandlerRoleArn": {
+      "Type": "String"
+    },
+    "WorkerRoleArn": {
+      "Type": "String"
+    },
+    "SenderRoleArn": {
+      "Type": "String"
+    },
+    "ProcessorLambdaRoleArn": {
+      "Type": "String"
+    },
+    "SenderLambdaRoleArn": {
+      "Type": "String"
+    },
+    "EventBridgeRoleArn": {
+      "Type": "String"
+    },
+    "Table": {
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-bucket" }
+          }
+        ]
+      }
+    },
+
+    "QueueTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-send-topic" }
+          }
+        ]
+      }
+    },
+    "ReviewTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-review-topic" }
+          }
+        ]
+      }
+    }, 
+    "SendTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-send-topic" }
+          }
+        ]
+      }
+    },
+    "CancelledTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-cancelled-topic" }
+          }
+        ]
+      }
+    },
+    "SentTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Sub": "${AWS::StackName}-sent-topic" }
+          }
+        ]
+      }
+    },
+
+    "WorkerQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "VisibilityTimeout": 300,
+        "DelaySeconds": 30
+      }
+    },
+    "QueueSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Protocol": "sqs",
+        "TopicArn": { "Fn::GetAtt": [ "QueueTopic", "TopicArn" ] },
+        "Endpoint": { "Fn::GetAtt": [ "WorkerQueue", "Arn" ] },
+        "RawMessageDelivery": true
+      }
+    },
+    "WorkerQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [ 
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "sns.amazonaws.com"
+              },
+              "Action": [ "sqs:SendMessage" ],
+              "Resource": "*",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Ref": "QueueTopic"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Queues": [
+          { "Ref": "WorkerQueue" }
+        ]
+      }
+    },
+
+    "SenderQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "VisibilityTimeout": 300,
+        "DelaySeconds": 1
+      }
+    },
+    "SendSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Protocol": "sqs",
+        "TopicArn": { "Fn::GetAtt": [ "SendTopic", "TopicArn" ] },
+        "Endpoint": { "Fn::GetAtt": [ "SenderQueue", "Arn" ] },
+        "RawMessageDelivery": true
+      }
+    },
+    "SenderQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [ 
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "sns.amazonaws.com"
+              },
+              "Action": [ "sqs:SendMessage" ],
+              "Resource": "*",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Ref": "SendTopic"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Queues": [
+          { "Ref": "SenderQueue" }
+        ]
+      }
+    },
+
+    "ApiHandlerPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow working with the email dynamodb global table and s3 buckets",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:PutObject",
+              "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:Query"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}" },
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}/index/*" }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "sns:Publish" ],
+              "Resource": [ 
+                {
+                  "Fn::GetAtt": [ "QueueTopic", "TopicArn" ]
+                } 
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "ApiHandlerRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ApiHandlerLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": [
+            "/",
+            [
+              "stepfunctions",
+              {
+                "Ref": "AWS::StackName"
+              },
+              "ApiHandler"
+            ]
+          ]
+        }
+      }
+    },
+    "ApiHandler": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "DefinitionUri": "email-api-handler.asl.json",
+        "Type": "EXPRESS",
+        "DefinitionSubstitutions": {
+          "Table": {
+            "Ref": "Table"
+          },
+          "Bucket": {
+            "Ref": "Bucket"
+          },
+          "QueueTopicArn": {
+            "Fn::GetAtt": [ "QueueTopic", "TopicArn" ]
+          },
+          "AWSRegion": {
+            "Ref": "AWS::Region"
+          }
+        },
+        "Role": {
+          "Ref": "ApiHandlerRoleArn"
+        },
+        "Tracing": {
+          "Enabled": true
+        },
+        "Logging": {
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "ApiHandlerLogGroup",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "IncludeExecutionData": true,
+          "Level": "ALL"
+        },
+        "Tags": {
+          "Name": { "Fn::Sub": "${AWS::StackName}-api-handler" }
+        }
+      }
+    },
+
+    "ProcessorLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow formatting emails by getting the request object and attachments from S3 and putting the raw email to S3.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [ "s3:GetObject", "s3:ListBucket" ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "s3:PutObject" ],
+              "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:UpdateItem"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}" },
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}/index/*" }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "ProcessorLambdaRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ProcessorLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "dotnet8",
+        "MemorySize": 1024,
+        "Timeout": 12,
+        "Handler": "email-processor-lambda::Cppl.EmailOrigin.Function::FunctionHandler",
+        "CodeUri": "../email-processor-lambda",
+        "Role": { "Ref": "ProcessorLambdaRoleArn" }
+      }
+    },
+    "SenderLambdaPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow sending emails via SES, updating status in DDB and notifying the 'sent' topic.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "ses:SendRawEmail",
+              "Resource": "*"
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "SenderLambdaRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "SenderLambda": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "dotnet8",
+        "MemorySize": 1024,
+        "Timeout": 12,
+        "Handler": "email-sender-lambda::Cppl.EmailOrigin.Function::FunctionHandler",
+        "CodeUri": "../email-sender-lambda",
+        "Role": { "Ref": "SenderLambdaRoleArn" }
+      }
+    },
+
+    "WorkerPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow processing emails from the queue (formatting and getting attachments), updating status in DDB, and writing the 'ready to send' content to S3. Also allows checking for cancellation in DDB and writing the placeholder to S3.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [ "sqs:receivemessage", "sqs:deletemessage" ],
+              "Resource": { "Fn::GetAtt": [ "WorkerQueue", "Arn" ] }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "s3:GetObject", "s3:PutObject" ],
+              "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:Query"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}" },
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}/index/*" }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "sns:Publish" ],
+              "Resource": [ 
+                {
+                  "Fn::GetAtt": [ "SendTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "ReviewTopic", "TopicArn" ]
+                } 
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": "lambda:InvokeFunction",
+              "Resource": [
+                { "Fn::GetAtt": [ "ProcessorLambda", "Arn" ] }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": "states:StartExecution",
+              "Resource": { "Ref": "Worker" }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "WorkerRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "Worker": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "DefinitionUri": "email-worker.asl.json",
+        "Type": "STANDARD",
+        "DefinitionSubstitutions": {
+          "Table": {
+            "Ref": "Table"
+          },
+          "Bucket": {
+            "Ref": "Bucket"
+          },
+          "WorkerQueueUrl": {
+            "Fn::GetAtt": [ "WorkerQueue", "QueueUrl" ]
+          },
+          "EmailCancelledTopicArn": {
+            "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
+          },
+          "EmailProcessorLambdaArn": {
+            "Fn::GetAtt": [ "ProcessorLambda", "Arn" ]
+          },
+          "ReviewRequiredTopicArn": {
+            "Fn::GetAtt": [ "ReviewTopic", "TopicArn" ]
+          },
+          "EmailReadyTopicArn": {
+            "Fn::GetAtt": [ "SendTopic", "TopicArn" ]
+          }
+        },
+        "Role": {
+          "Ref": "WorkerRoleArn"
+        }
+      }
+    },
+    "WorkerAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmDescription": "Alarm to trigger (restart) the worker state machine if there are no running executions.",
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsStarted",
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": { "Fn::GetAtt": [ "Worker", "Arn" ] }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 60,
+        "DatapointsToAlarm": 2,
+        "EvaluationPeriods": 2,
+        "Threshold": 1,
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching"
+      }
+    },
+    "WorkerRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "Worker",
+            "Arn": { "Fn::GetAtt": [ "Worker", "Arn" ] },
+            "RoleArn": { "Ref": "EventBridgeRoleArn" },
+            "Input": "{}"
+          }
+        ],
+        "EventPattern": {
+          "source": [
+            "aws.cloudwatch"
+          ],
+          "resources": [
+            { "Fn::GetAtt": [ "WorkerAlarm", "Arn" ] }
+          ],
+          "detail-type": [
+            "CloudWatch Alarm State Change"
+          ],
+          "detail": {
+            "state": {
+              "value": [
+                "ALARM"
+              ]
+            }
+          }
+        }
+      }
+    },
+
+    "EventBridgePolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow the event bridge to start the state machines.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "states:StartExecution"
+              ],
+              "Resource": [
+                { "Ref": "Worker" },
+                { "Ref": "Sender" }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "EventBridgeRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+
+    "SenderPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow sending prepared emails via SES, updating status in DDB and notifying the 'sent' topic.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [ "sqs:receivemessage", "sqs:deletemessage" ],
+              "Resource": { "Fn::GetAtt": [ "SenderQueue", "Arn" ] }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}" },
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}/index/*" }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "sns:Publish" ],
+              "Resource": [ 
+                {
+                  "Fn::GetAtt": [ "SentTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
+                } 
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": "lambda:InvokeFunction",
+              "Resource": [
+                { "Fn::GetAtt": [ "SenderLambda", "Arn" ] }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": "states:StartExecution",
+              "Resource": { "Ref": "Sender" }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "SenderRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "Sender": {
+      "Type": "AWS::Serverless::StateMachine",
+      "Properties": {
+        "DefinitionUri": "email-sender.asl.json",
+        "DefinitionSubstitutions": {
+          "Table": {
+            "Ref": "Table"
+          },
+          "Bucket": {
+            "Ref": "Bucket"
+          },
+          "SenderQueueUrl": {
+            "Fn::GetAtt": [ "SenderQueue", "QueueUrl" ]
+          },
+          "EmailSentTopicArn": {
+            "Fn::GetAtt": [ "SentTopic", "TopicArn" ]
+          },
+          "EmailSenderLambdaArn": {
+            "Fn::GetAtt": [ "SenderLambda", "Arn" ]
+          },
+          "EmailCancelledTopicArn": {
+            "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
+          }
+        },
+        "Role": {
+          "Ref": "SenderRoleArn"
+        }
+      }
+    },
+    "SenderAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmDescription": "Alarm to trigger (restart) the worker state machine if there are no running executions.",
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsStarted",
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": { "Fn::GetAtt": [ "Sender", "Arn" ] }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 60,
+        "DatapointsToAlarm": 2,
+        "EvaluationPeriods": 2,
+        "Threshold": 1,
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching"
+      }
+    },
+    "SenderRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "Sender",
+            "Arn": { "Fn::GetAtt": [ "Sender", "Arn" ] },
+            "RoleArn": { "Ref": "EventBridgeRoleArn" },
+            "Input": "{}"
+          }
+        ],
+        "EventPattern": {
+          "source": [
+            "aws.cloudwatch"
+          ],
+          "resources": [
+            { "Fn::GetAtt": [ "SenderAlarm", "Arn" ] }
+          ],
+          "detail-type": [
+            "CloudWatch Alarm State Change"
+          ],
+          "detail": {
+            "state": {
+              "value": [
+                "ALARM"
+              ]
+            }
+          }
+        }
+      }
+    },
+
+    "ApiItegrationPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Policy to allow the API Gateway to start the state machines and subscribe external HTTPS endpoints to the SNS topics.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "states:StartSyncExecution"
+              ],
+              "Resource": [
+                { "Ref": "ApiHandler" }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:UpdateItem"
+              ],
+              "Resource": [
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}" },
+                { "Fn::Sub": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}/index/*" }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [ "sns:Subscribe" ],
+              "Resource": [ 
+                {
+                  "Fn::GetAtt": [ "QueueTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "SendTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "ReviewTopic", "TopicArn" ]
+                },
+                {
+                  "Fn::GetAtt": [ "SentTopic", "TopicArn" ]
+                }
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "sns:Protocol": "https"
+                }
+              }
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "ApiGatewayIntegrationRoleArn"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ApiGateway": {
+      "Type": "AWS::Serverless::Application",
+      "Properties": {
+        "Location": "api-gateway.template",
+        "Parameters": {
+          "ApiGatewayIntegrationRoleArn": { "Ref": "ApiGatewayIntegrationRoleArn" },
+          "Table": { "Ref": "Table" },
+          "ApiHandlerStateMachineArn": { "Fn::GetAtt": [ "ApiHandler", "Arn" ] }
+        },
+        "Tags": { "Name": { "Fn::Sub": "${AWS::StackName}-gateway" } }
+      }
+    }
+  }
+}
