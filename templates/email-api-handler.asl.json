@@ -151,7 +151,7 @@
         "Key.$": "$.key"
       },
       "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
-      "Next": "Send Notification of New Email",
+      "Next": "Start Email Processing",
       "Retry": [
         {
           "ErrorEquals": [
@@ -171,6 +171,38 @@
         }
       ],
       "ResultPath": "$.s3"
+    },
+    "Start Email Processing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Parameters": {
+        "StateMachineArn": "${EmailProcessorStateMachineArn}",
+        "Input": {
+          "event": {
+            "id.$": "$.id",
+            "hash.$": "$.hash",
+            "location": {
+              "bucket": "${Bucket}",
+              "key.$": "$.key"
+            },
+            "request": {
+              "from.$": "$.input.from",
+              "to.$": "$.input.to",
+              "subject.$": "$.input.subject"
+            }
+          },
+          "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+        }
+      },
+      "Next": "Send Notification of New Email",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Runtime Error Response"
+        }
+      ]
     },
     "Send Notification of New Email": {
       "Type": "Task",
@@ -192,7 +224,15 @@
         }
       },
       "Next": "Success Response with ID",
-      "ResultPath": "$.sns"
+      "ResultPath": "$.sns",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Runtime Error Response"
+        }
+      ]
     },
     "Success Response with ID": {
       "Type": "Pass",

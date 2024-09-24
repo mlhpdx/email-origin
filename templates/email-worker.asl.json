@@ -1,286 +1,244 @@
 {
-  "Comment": "Gets queued emails from SQS and prepares them for sending (if not cancelled). Formats content and gets attachments, and writes 'raw' email to S3. Checks and updates status in DDB.",
-  "StartAt": "ReceiveMessage",
+  "Comment": "Received queued email from API handler and prepares it for sending (if not cancelled). Formats content and gets attachments, and writes 'raw' email to S3. Checks and updates status in DDB.",
+  "StartAt": "Delay to Allow Cancellation",
   "States": {
-    "ReceiveMessage": {
+    "Delay to Allow Cancellation": {
+      "Type": "Wait",
+      "Next": "Get Email Metadata (Status)",
+      "Seconds": 30
+    },
+    "Get Email Metadata (Status)": {
       "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
       "Parameters": {
-        "QueueUrl": "${WorkerQueueUrl}",
-        "MaxNumberOfMessages": 10,
-        "WaitTimeSeconds": 20
-      },
-      "Resource": "arn:aws:states:::aws-sdk:sqs:receiveMessage",
-      "Next": "Were any Messages Received?",
-      "ResultPath": "$.sqs"
-    },
-    "Were any Messages Received?": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.sqs.Messages[0]",
-          "IsPresent": true,
-          "Next": "Process Each Queued Email"
-        }
-      ],
-      "Default": "Self-Invoke to Continue Processing Messages"
-    },
-    "Process Each Queued Email": {
-      "Type": "Map",
-      "ItemProcessor": {
-        "ProcessorConfig": {
-          "Mode": "INLINE"
-        },
-        "StartAt": "Get Email Metadata (Status)",
-        "States": {
-          "Get Email Metadata (Status)": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:getItem",
-            "Parameters": {
-              "TableName": "${Table}",
-              "Key": {
-                "PK": {
-                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
-                },
-                "SK": {
-                  "S": "email"
-                }
-              }
-            },
-            "Next": "Has the Email been Cancelled?",
-            "ResultPath": "$.ddb"
+        "TableName": "${Table}",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('EMAIL|{}',$.event.id)"
           },
-          "Has the Email been Cancelled?": {
-            "Type": "Choice",
-            "Choices": [
-              {
-                "Variable": "$.ddb.Item.status.S",
-                "StringMatches": "cancelled*",
-                "Next": "Notify Cancelled"
-              }
-            ],
-            "Default": "Prepare Raw Email Object"
-          },
-          "Notify Cancelled": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::sns:publish",
-            "Parameters": {
-              "TopicArn": "${EmailCancelledTopicArn}",
-              "Message": {
-                "id.$": "$.event.id",
-                "status": "cancelled"
-              }
-            },
-            "ResultPath": null,
-            "Next": "DeleteMessage"
-          },
-          "Prepare Raw Email Object": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::lambda:invoke",
-            "Parameters": {
-              "Payload.$": "$.event",
-              "FunctionName": "${EmailProcessorLambdaArn}"
-            },
-            "Retry": [
-              {
-                "ErrorEquals": [
-                  "Lambda.ServiceException",
-                  "Lambda.AWSLambdaException",
-                  "Lambda.SdkClientException",
-                  "Lambda.TooManyRequestsException"
-                ],
-                "IntervalSeconds": 1,
-                "MaxAttempts": 3,
-                "BackoffRate": 2
-              }
-            ],
-            "Next": "Is Review Requested?",
-            "ResultPath": "$.lambda",
-            "Catch": [
-              {
-                "ErrorEquals": [
-                  "States.ALL"
-                ],
-                "Next": "Mark as Cancelled/Processing Failed"
-              }
-            ]
-          },
-          "Mark as Cancelled/Processing Failed": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:updateItem",
-            "Parameters": {
-              "TableName": "${Table}",
-              "Key": {
-                "PK": {
-                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
-                },
-                "SK": {
-                  "S": "email"
-                }
-              },
-              "UpdateExpression": "SET #status = :cancelled",
-              "ExpressionAttributeNames": {
-                "#status": "status"
-              },
-              "ExpressionAttributeValues": {
-                ":cancelled": {
-                  "S": "cancelled_processing_failed"
-                }
-              }
-            },
-            "ResultPath": null,
-            "Next": "Notify Cancelled"
-          },
-          "Is Review Requested?": {
-            "Type": "Choice",
-            "Choices": [
-              {
-                "Variable": "$.ddb.Item.status.S",
-                "StringEquals": "review_required",
-                "Next": "Notify for Review and Wait for Response"
-              }
-            ],
-            "Default": "Mark as Processed (Ready to Send)"
-          },
-          "Mark as Processed (Ready to Send)": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:updateItem",
-            "Parameters": {
-              "TableName": "${Table}",
-              "Key": {
-                "PK": {
-                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
-                },
-                "SK": {
-                  "S": "email"
-                }
-              },
-              "UpdateExpression": "SET #status = :ready",
-              "ExpressionAttributeNames": {
-                "#status": "status"
-              },
-              "ExpressionAttributeValues": {
-                ":ready": {
-                  "S": "ready_to_send"
-                }
-              }
-            },
-            "Next": "Notify Email Processed",
-            "ResultPath": null
-          },
-          "Notify for Review and Wait for Response": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
-            "Parameters": {
-              "Message": {
-                "location": {
-                  "bucket": "${Bucket}",
-                  "key.$": "$.lambda.Payload.key",
-                  "uri.$": "$.lambda.Payload.uri"
-                },
-                "token.$": "$$.Task.Token"
-              },
-              "TopicArn": "${ReviewRequiredTopicArn}"
-            },
-            "Catch": [
-              {
-                "ErrorEquals": [
-                  "States.ALL"
-                ],
-                "Comment": "An affirmative response is required to send the email. So any error should result in it being marked as \"failed review\" and not sent.",
-                "Next": "Mark as Cancelled/Review Failed",
-                "ResultPath": "$.error"
-              }
-            ],
-            "Next": "Mark as Processed (Ready to Send)",
-            "TimeoutSeconds": 3600,
-            "ResultPath": null
-          },
-          "Mark as Cancelled/Review Failed": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:updateItem",
-            "Parameters": {
-              "TableName": "${Table}",
-              "Key": {
-                "PK": {
-                  "S.$": "States.Format('EMAIL|{}',$.event.id)"
-                },
-                "SK": {
-                  "S": "email"
-                }
-              },
-              "UpdateExpression": "SET #status = :cancelled",
-              "ExpressionAttributeNames": {
-                "#status": "status"
-              },
-              "ExpressionAttributeValues": {
-                ":cancelled": {
-                  "S": "cancelled_no_review"
-                }
-              }
-            },
-            "Next": "Notify Cancelled",
-            "ResultPath": null
-          },
-          "Notify Email Processed": {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::sns:publish",
-            "Parameters": {
-              "TopicArn": "${EmailReadyTopicArn}",
-              "Message": {
-                "id.$": "$.event.id",
-                "bucket": "${Bucket}",
-                "key.$": "$.lambda.Payload.key",
-                "uri.$": "$.lambda.Payload.uri",
-                "status": "ready_to_send"
-              }
-            },
-            "ResultPath": null,
-            "Next": "DeleteMessage"
-          },
-          "DeleteMessage": {
-            "Type": "Task",
-            "Parameters": {
-              "QueueUrl": "${WorkerQueueUrl}",
-              "ReceiptHandle.$": "$.handle"
-            },
-            "Resource": "arn:aws:states:::aws-sdk:sqs:deleteMessage",
-            "End": true,
-            "ResultPath": null
+          "SK": {
+            "S": "email"
           }
         }
       },
-      "Next": "Self-Invoke to Continue Processing Messages",
-      "ItemsPath": "$.sqs.Messages",
-      "ItemSelector": {
-        "handle.$": "$$.Map.Item.Value.ReceiptHandle",
-        "event.$": "States.StringToJson($$.Map.Item.Value.Body)"
+      "Next": "Has the Email been Cancelled?",
+      "ResultPath": "$.ddb"
+    },
+    "Has the Email been Cancelled?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.ddb.Item.status.S",
+          "StringMatches": "cancelled*",
+          "Next": "Notify Cancelled"
+        }
+      ],
+      "Default": "Prepare Raw Email Object"
+    },
+    "Notify Cancelled": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${EmailCancelledTopicArn}",
+        "Message": {
+          "id.$": "$.event.id",
+          "status": "cancelled"
+        }
+      },
+      "ResultPath": null,
+      "Next": "DeleteMessage"
+    },
+    "Prepare Raw Email Object": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$.event",
+        "FunctionName": "${EmailProcessorLambdaArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Is Review Requested?",
+      "ResultPath": "$.lambda",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Mark as Cancelled/Processing Failed"
+        }
+      ]
+    },
+    "Mark as Cancelled/Processing Failed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${Table}",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('EMAIL|{}',$.event.id)"
+          },
+          "SK": {
+            "S": "email"
+          }
+        },
+        "UpdateExpression": "SET #status = :cancelled",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":cancelled": {
+            "S": "cancelled_processing_failed"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Next": "Notify Cancelled"
+    },
+    "Is Review Requested?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.ddb.Item.status.S",
+          "StringEquals": "review_required",
+          "Next": "Notify for Review and Wait for Response"
+        }
+      ],
+      "Default": "Mark as Processed (Ready to Send)"
+    },
+    "Mark as Processed (Ready to Send)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${Table}",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('EMAIL|{}',$.event.id)"
+          },
+          "SK": {
+            "S": "email"
+          }
+        },
+        "UpdateExpression": "SET #status = :ready",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":ready": {
+            "S": "ready_to_send"
+          }
+        }
+      },
+      "Next": "Start Sending Process",
+      "ResultPath": null
+    },
+    "Start Sending Process": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Parameters": {
+        "StateMachineArn": "${SenderStateMachineArn}",
+        "Input": {
+          "event": {
+            "id.$": "$.event.id",
+            "bucket": "${Bucket}",
+            "key.$": "$.lambda.Payload.key",
+            "uri.$": "$.lambda.Payload.uri",
+            "status": "ready_to_send"
+          },
+          "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+        }
+      },
+      "Next": "Notify Email Processed"
+    },
+    "Notify for Review and Wait for Response": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+      "Parameters": {
+        "Message": {
+          "location": {
+            "bucket": "${Bucket}",
+            "key.$": "$.lambda.Payload.key",
+            "uri.$": "$.lambda.Payload.uri"
+          },
+          "token.$": "$$.Task.Token"
+        },
+        "TopicArn": "${ReviewRequiredTopicArn}"
       },
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "Ouch"
+          "Comment": "An affirmative response is required to send the email. So any error should result in it being marked as \"failed review\" and not sent.",
+          "Next": "Mark as Cancelled/Review Failed",
+          "ResultPath": "$.error"
         }
       ],
-      "ResultPath": "$.map"
+      "Next": "Mark as Processed (Ready to Send)",
+      "TimeoutSeconds": 3600,
+      "ResultPath": null
     },
-    "Ouch": {
-      "Type": "Pass",
-      "Comment": "Wait? Log? This is a last-chance handler called when something inside the map went wrong but wasn't otherwise handled.",
-      "Next": "Self-Invoke to Continue Processing Messages"
-    },
-    "Self-Invoke to Continue Processing Messages": {
+    "Mark as Cancelled/Review Failed": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::states:startExecution",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "Input": {
-          "StatePayload": "Continuation of Worker.",
-          "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+        "TableName": "${Table}",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('EMAIL|{}',$.event.id)"
+          },
+          "SK": {
+            "S": "email"
+          }
         },
-        "StateMachineArn.$": "$$.StateMachine.Id"
+        "UpdateExpression": "SET #status = :cancelled",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":cancelled": {
+            "S": "cancelled_no_review"
+          }
+        }
       },
-      "End": true
+      "Next": "Notify Cancelled",
+      "ResultPath": null
+    },
+    "Notify Email Processed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${EmailReadyTopicArn}",
+        "Message": {
+          "id.$": "$.event.id",
+          "bucket": "${Bucket}",
+          "key.$": "$.lambda.Payload.key",
+          "uri.$": "$.lambda.Payload.uri",
+          "status": "ready_to_send"
+        }
+      },
+      "ResultPath": null,
+      "Next": "DeleteMessage"
+    },
+    "DeleteMessage": {
+      "Type": "Task",
+      "Parameters": {
+        "QueueUrl": "${WorkerQueueUrl}",
+        "ReceiptHandle.$": "$.handle"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:sqs:deleteMessage",
+      "End": true,
+      "ResultPath": null
     }
   }
 }
