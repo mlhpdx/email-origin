@@ -202,7 +202,8 @@
           ],
           "Next": "Runtime Error Response"
         }
-      ]
+      ],
+      "ResultPath": null
     },
     "Send Notification of New Email": {
       "Type": "Task",

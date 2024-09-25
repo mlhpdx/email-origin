@@ -158,7 +158,8 @@
           "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
         }
       },
-      "Next": "Notify Email Processed"
+      "Next": "Notify Email Processed",
+      "ResultPath": null
     },
     "Notify for Review and Wait for Response": {
       "Type": "Task",
