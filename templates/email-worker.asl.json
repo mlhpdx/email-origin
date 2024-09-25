@@ -46,7 +46,7 @@
         }
       },
       "ResultPath": null,
-      "Next": "DeleteMessage"
+      "End": true
     },
     "Prepare Raw Email Object": {
       "Type": "Task",
@@ -229,17 +229,7 @@
         }
       },
       "ResultPath": null,
-      "Next": "DeleteMessage"
-    },
-    "DeleteMessage": {
-      "Type": "Task",
-      "Parameters": {
-        "QueueUrl": "${WorkerQueueUrl}",
-        "ReceiptHandle.$": "$.handle"
-      },
-      "Resource": "arn:aws:states:::aws-sdk:sqs:deleteMessage",
-      "End": true,
-      "ResultPath": null
+      "End": true
     }
   }
 }
