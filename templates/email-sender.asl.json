@@ -53,7 +53,7 @@
         }
       },
       "ResultPath": null,
-      "Next": "DeleteMessage"
+      "End": true
     },
     "Notify Cancelled": {
       "Type": "Task",
@@ -66,7 +66,7 @@
         }
       },
       "ResultPath": null,
-      "Next": "DeleteMessage"
+      "End": true
     },
     "Send via Lambda (Stream from S3)": {
       "Type": "Task",
@@ -194,17 +194,7 @@
         }
       },
       "ResultPath": null,
-      "Next": "DeleteMessage"
-    },
-    "DeleteMessage": {
-      "Type": "Task",
-      "Parameters": {
-        "QueueUrl": "${SenderQueueUrl}",
-        "ReceiptHandle.$": "$.handle"
-      },
-      "Resource": "arn:aws:states:::aws-sdk:sqs:deleteMessage",
-      "End": true,
-      "ResultPath": null
+      "End": true
     }
   }
 }
