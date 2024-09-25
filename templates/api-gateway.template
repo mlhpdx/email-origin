@@ -178,7 +178,8 @@
 
     "GatewayV1": {
       "DependsOn": [
-        "EmailPost"
+        "EmailPost",
+        "EmailByIdDelete"
       ],
       "Type": "AWS::ApiGateway::Stage",
       "Properties": {
@@ -207,7 +208,8 @@
     },
     "GatewayDeployment1": {
       "DependsOn": [
-        "EmailPost"
+        "EmailPost",
+        "EmailByIdDelete"
       ],
       "Type": "AWS::ApiGateway::Deployment",
       "Properties": {
