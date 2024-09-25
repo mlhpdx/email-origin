@@ -342,11 +342,6 @@
           "Statement": [
             {
               "Effect": "Allow",
-              "Action": [ "sqs:receivemessage", "sqs:deletemessage" ],
-              "Resource": { "Fn::GetAtt": [ "WorkerQueue", "Arn" ] }
-            },
-            {
-              "Effect": "Allow",
               "Action": [ "s3:GetObject", "s3:PutObject" ],
               "Resource": { "Fn::Sub": "${Bucket.Arn}/*" }
             },
@@ -420,9 +415,6 @@
           "Bucket": {
             "Ref": "Bucket"
           },
-          "WorkerQueueUrl": {
-            "Fn::GetAtt": [ "WorkerQueue", "QueueUrl" ]
-          },
           "EmailCancelledTopicArn": {
             "Fn::GetAtt": [ "CancelledTopic", "TopicArn" ]
           },
@@ -452,11 +444,6 @@
         "PolicyDocument": {
           "Version": "2012-10-17",
           "Statement": [
-            {
-              "Effect": "Allow",
-              "Action": [ "sqs:receivemessage", "sqs:deletemessage" ],
-              "Resource": { "Fn::GetAtt": [ "SenderQueue", "Arn" ] }
-            },
             {
               "Effect": "Allow",
               "Action": "s3:GetObject",
@@ -526,9 +513,6 @@
           },
           "Bucket": {
             "Ref": "Bucket"
-          },
-          "SenderQueueUrl": {
-            "Fn::GetAtt": [ "SenderQueue", "QueueUrl" ]
           },
           "EmailSentTopicArn": {
             "Fn::GetAtt": [ "SentTopic", "TopicArn" ]
