@@ -130,7 +130,7 @@
                 "states:StartExecution"
               ],
               "Resource": [
-                { "Ref": "Worker" },
+                { "Ref": "Worker" }
               ]
             },
             {
@@ -611,6 +611,20 @@
           "ApiHandlerStateMachineArn": { "Fn::GetAtt": [ "ApiHandler", "Arn" ] }
         },
         "Tags": { "Name": { "Fn::Sub": "${AWS::StackName}-gateway" } }
+      }
+    }
+  },
+  "Outputs": {
+    "ApiId": {
+      "Description": "API Gateway ID with resources and methods for outbound email.",
+      "Value": {
+        "Fn::GetAtt": [ "ApiGateway", "Outputs.ApiId" ]
+      }
+    },
+    "ApiEndpoint": {
+      "Description": "API Gateway endpoint (domain name) with resources and methods for outbound email.",
+      "Value": {
+        "Fn::GetAtt": [ "ApiGateway", "Outputs.EndpointDomain" ]
       }
     }
   }
