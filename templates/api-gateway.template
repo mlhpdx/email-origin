@@ -11,6 +11,9 @@
     },
     "ApiHandlerStateMachineArn": {
       "Type": "String"
+    },
+    "QueueTopicArn": {
+      "Type": "String"
     }
   },
   "Resources": {

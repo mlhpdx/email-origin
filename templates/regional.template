@@ -608,7 +608,8 @@
         "Parameters": {
           "ApiGatewayIntegrationRoleArn": { "Ref": "ApiGatewayIntegrationRoleArn" },
           "Table": { "Ref": "Table" },
-          "ApiHandlerStateMachineArn": { "Fn::GetAtt": [ "ApiHandler", "Arn" ] }
+          "ApiHandlerStateMachineArn": { "Fn::GetAtt": [ "ApiHandler", "Arn" ] },
+          "QueueTopicArn": { "Fn::GetAtt": [ "QueueTopic", "TopicArn" ] }
         },
         "Tags": { "Name": { "Fn::Sub": "${AWS::StackName}-gateway" } }
       }
