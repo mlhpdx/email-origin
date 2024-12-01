@@ -80,7 +80,7 @@
           "RequestTemplates": {
             "application/json": {
               "Fn::Sub": [
-                "{\"input\": \"$util.escapeJavaScript($input.json('$'))\",\"stateMachineArn\": \"${arn}\"}",
+                "{\"input\": \"$util.escapeJavaScript($input.json('$').replaceAll(\"\\'\", \"'\"))\",\"stateMachineArn\": \"${arn}\"}",
                 {
                   "arn": {
                     "Ref": "ApiHandlerStateMachineArn"
@@ -157,6 +157,83 @@
                 {
                   "table": {
                     "Ref": "Table"
+                  }
+                }
+              ]
+            }
+          },
+          "PassthroughBehavior": "NEVER",
+          "TimeoutInMillis": 10000,
+          "IntegrationResponses": [
+            {
+              "StatusCode": "200",
+              "ResponseTemplates": {
+                "application/json": "$input.json('$')"
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    "Hook": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "Api",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "hook",
+        "RestApiId": {
+          "Ref": "Api"
+        }
+      }
+    },
+    "HookPost": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "Api"
+        },
+        "ResourceId": {
+          "Ref": "Hook"
+        },
+        "HttpMethod": "POST",
+        "AuthorizationType": "AWS_IAM",
+        "ApiKeyRequired": false,
+        "MethodResponses": [
+          {
+            "StatusCode": "200",
+            "ResponseModels": {
+              "application/json": "Empty"
+            }
+          }
+        ],
+        "Integration": {
+          "Type": "AWS",
+          "IntegrationHttpMethod": "POST",
+          "Credentials": { "Ref": "ApiGatewayIntegrationRoleArn" },
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:aws:apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":sns:action/Subscribe"
+              ]
+            ]
+          },
+          "RequestTemplates": {
+            "application/json": {
+              "Fn::Sub": [
+                "{\"Protocol\": \"http\", \"\":\"\",  \"$util.escapeJavaScript($input.json('$'))\",\"TopicArn\": \"${arn}\"}",
+                {
+                  "arn": {
+                    "Ref": "QueueTopicArn"
                   }
                 }
               ]
