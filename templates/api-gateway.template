@@ -83,7 +83,7 @@
           "RequestTemplates": {
             "application/json": {
               "Fn::Sub": [
-                "{\"input\": \"$util.escapeJavaScript($input.body).replaceAll(\"\\\\'\", \"'\")\",\"stateMachineArn\": \"${arn}\"}",
+                "{\"input\": \"$util.escapeJavaScript($input.json('$')).replaceAll(\"\\\\'\", \"'\").replaceAll(\"\\\\'\", \"'\")\",\"stateMachineArn\": \"${arn}\"}",
                 {
                   "arn": {
                     "Ref": "ApiHandlerStateMachineArn"
