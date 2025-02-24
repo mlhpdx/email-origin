@@ -1,4 +1,5 @@
 ﻿// Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Amazon.Lambda.Core;
@@ -101,7 +102,7 @@ public class Function(Amazon.S3.IAmazonS3 s3)
 
         // TODO: handle attachments as array of objects (rather than strings) with keys for s3 uri, file name,
         // and content type which should override what's on the object in S3.
-        var attachments = body.TryGetProperty("attachments", out var attachments_element) ? attachments_element.EnumerateArray().ToArray() : null;
+        var attachments = email.TryGetProperty("attachments", out var attachments_element) ? attachments_element.EnumerateArray().ToArray() : null;
 
         // Create the email message using MkimeKit to format it as a raw email message, then save to S3
         // so it can be picked-up by the sender sfn.
@@ -117,17 +118,28 @@ public class Function(Amazon.S3.IAmazonS3 s3)
 
         using var multipart = new MimeKit.Multipart("mixed");
 
-        var attachment_contents = await Task.WhenAll((attachments ?? []).Select(a => s3.GetObjectAsync(bucket, a.GetString()!)));
-        var attachment_parts = attachment_contents.Select(c => new MimeKit.MimePart(c.Headers.ContentType)
+        // this is a little gross, but since each attachment is going to be added to the email in base64, and there is a practical
+        // limit of ~10MB on email size, loading all of the attachments into RAM at once is probably okay. Emails will send faster
+        // and eventually I'll need to add handling here for large attachments (swap for per-recipient, pre-signed links).
+        var attachment_responses = await Task.WhenAll((attachments ?? []).Select(a => s3.GetObjectAsync(bucket, a.GetString()!)));
+        var attachment_tasks = attachment_responses
+            .Select(response => (response, ms: new MemoryStream()))
+            .Select(async a => { 
+                await a.response.ResponseStream.CopyToAsync(a.ms);
+                a.ms.Seek(0, SeekOrigin.Begin);
+                return (key: a.response.Key, encoding: a.response.Headers.ContentEncoding, a.ms);
+            });
+        var attachment_contents = await Task.WhenAll(attachment_tasks);
+        var attachment_parts = attachment_contents.Select(c => new MimeKit.MimePart(c.encoding)
             {
-                FileName = c.Key.Split('/').Last(),
+                FileName = c.key.Split('/').Last(),
                 ContentDisposition = new MimeKit.ContentDisposition(MimeKit.ContentDisposition.Attachment),
                 ContentTransferEncoding = MimeKit.ContentEncoding.Base64,
-                Content = new MimeKit.MimeContent(c.Headers.ContentEncoding switch {
-                    "gzip" => new System.IO.Compression.GZipStream(c.ResponseStream, System.IO.Compression.CompressionMode.Decompress),
-                    "deflate" => new System.IO.Compression.DeflateStream(c.ResponseStream, System.IO.Compression.CompressionMode.Decompress),
-                    "br" => new System.IO.Compression.BrotliStream(c.ResponseStream, System.IO.Compression.CompressionMode.Decompress),
-                    _ => c.ResponseStream 
+                Content = new MimeKit.MimeContent(c.encoding switch {
+                    "gzip" => new System.IO.Compression.GZipStream(c.ms, System.IO.Compression.CompressionMode.Decompress),
+                    "deflate" => new System.IO.Compression.DeflateStream(c.ms, System.IO.Compression.CompressionMode.Decompress),
+                    "br" => new System.IO.Compression.BrotliStream(c.ms, System.IO.Compression.CompressionMode.Decompress),
+                    _ => c.ms 
                 })
             });
         var attachment_id_lookup = attachment_parts.ToDictionary(p => p.FileName, p => p.ContentId = MimeKit.Utils.MimeUtils.GenerateMessageId());
