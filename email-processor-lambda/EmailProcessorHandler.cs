@@ -127,10 +127,10 @@ public class Function(Amazon.S3.IAmazonS3 s3)
             .Select(async a => { 
                 await a.response.ResponseStream.CopyToAsync(a.ms);
                 a.ms.Seek(0, SeekOrigin.Begin);
-                return (key: a.response.Key, encoding: a.response.Headers.ContentEncoding, a.ms);
+                return (key: a.response.Key, type: a.response.Headers.ContentType, encoding: a.response.Headers.ContentEncoding, a.ms);
             });
         var attachment_contents = await Task.WhenAll(attachment_tasks);
-        var attachment_parts = attachment_contents.Select(c => new MimeKit.MimePart(c.encoding)
+        var attachment_parts = attachment_contents.Select(c => new MimeKit.MimePart(c.type ?? "application/octet-stream")
             {
                 FileName = c.key.Split('/').Last(),
                 ContentDisposition = new MimeKit.ContentDisposition(MimeKit.ContentDisposition.Attachment),
