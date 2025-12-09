@@ -21,6 +21,6 @@ aws cloudformation deploy \
   --template-file global.template.published \
   --no-fail-on-empty-changeset \
   --parameter-overrides \
-    ReplicaRegions="${REPLICA_REGIONS:-ACCOUNT_REGIONS}" \
+    ReplicaRegions="${REPLICA_REGIONS:-$ACCOUNT_REGIONS}" \
   --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
   --region us-west-2

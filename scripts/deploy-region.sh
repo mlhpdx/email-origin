@@ -31,7 +31,7 @@ export ACCOUNT_REGIONS=$(aws account list-regions \
   --query "Regions[].RegionName" \
   --output text)
 
-for DEPLOY_REGION in ${DEPLOY_TO_REGIONS:-ACCOUNT_REGIONS}; do
+for DEPLOY_REGION in ${DEPLOY_TO_REGIONS:-$ACCOUNT_REGIONS}; do
   sam deploy \
     --s3-bucket ${BUCKET_NAME_PREFIX}-${DEPLOY_REGION} \
     --s3-prefix ${BUCKET_KEY_PREFIX}/email-origin/${CODEBUILD_RESOLVED_SOURCE_VERSION} \
