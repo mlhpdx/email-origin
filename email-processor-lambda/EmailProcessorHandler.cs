@@ -91,6 +91,9 @@ public class Function(Amazon.S3.IAmazonS3 s3)
         string[] bcc = email.TryGetProperty("bcc", out var bcc_element) ? bcc_element.PromoteToStringArray() : [];
         string[] reply_to = email.TryGetProperty("reply_to", out var reply_to_element) ? reply_to_element.PromoteToStringArray() : [];
 
+        string in_reply_to = email.TryGetProperty("in_reply_to", out var in_reply_to_element) ? in_reply_to_element.GetString() ?? "" : "";
+        string[] references = email.TryGetProperty("references", out var references_element) ? references_element.PromoteToStringArray() : [];
+
         var subject = email.TryGetProperty("subject", out var subject_element) ? subject_element.GetString()
             : throw new InvalidDataException("Request is missing subject.");
 
@@ -112,6 +115,9 @@ public class Function(Amazon.S3.IAmazonS3 s3)
         if (cc.Length > 0) message.Cc.AddRange(cc.Select(c => MimeKit.MailboxAddress.Parse(c)));
         if (bcc.Length > 0) message.Bcc.AddRange(bcc.Select(b => MimeKit.MailboxAddress.Parse(b)));
         if (reply_to.Length > 0) message.ReplyTo.AddRange(reply_to.Select(r => MimeKit.MailboxAddress.Parse(r)));
+
+        if (!string.IsNullOrEmpty(in_reply_to)) message.InReplyTo = in_reply_to;
+        if (references.Length > 0) message.References.AddRange(references);
 
         message.From.Add(MimeKit.MailboxAddress.Parse(from));
         message.Subject = subject;
