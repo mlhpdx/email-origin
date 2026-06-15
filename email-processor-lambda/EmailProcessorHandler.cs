@@ -14,7 +14,7 @@ public static partial class Extensions
     public static string[] PromoteToStringArray(this JsonElement element) => element.ValueKind switch {
         JsonValueKind.Null => [],
         JsonValueKind.String => [ element.GetString()! ],
-        JsonValueKind.Array => [ ..element.EnumerateArray().Select(e => e.GetString()) ],
+        JsonValueKind.Array => [ ..element.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!) ],
         _ => throw new InvalidDataException("Value to promote is not a string or array.")
     };
 
@@ -82,7 +82,7 @@ public class Function(Amazon.S3.IAmazonS3 s3)
         var email = json.RootElement.TryGetProperty("email", out var email_element) ? email_element 
             : throw new InvalidDataException("Request is missing email.");
 
-        var from = email.TryGetProperty("from", out var from_element) ? from_element.GetString() 
+        var from = email.TryGetProperty("from", out var from_element) ? from_element.GetString()!
             : throw new InvalidDataException("Request is missing from.");
 
         string[] to = email.TryGetProperty("to", out var to_element) ? to_element.PromoteToStringArray() 
@@ -94,7 +94,7 @@ public class Function(Amazon.S3.IAmazonS3 s3)
         string in_reply_to = email.TryGetProperty("in_reply_to", out var in_reply_to_element) ? in_reply_to_element.GetString() ?? "" : "";
         string[] references = email.TryGetProperty("references", out var references_element) ? references_element.PromoteToStringArray() : [];
 
-        var subject = email.TryGetProperty("subject", out var subject_element) ? subject_element.GetString()
+        var subject = email.TryGetProperty("subject", out var subject_element) ? subject_element.GetString()!
             : throw new InvalidDataException("Request is missing subject.");
 
         var body = email.TryGetProperty("body", out var body_element) ? body_element
@@ -148,7 +148,7 @@ public class Function(Amazon.S3.IAmazonS3 s3)
                     _ => c.ms 
                 })
             });
-        var attachment_id_lookup = attachment_parts.ToDictionary(p => p.FileName, p => p.ContentId = MimeKit.Utils.MimeUtils.GenerateMessageId());
+        var attachment_id_lookup = attachment_parts.ToDictionary(p => p.FileName ?? "<unknown>", p => p.ContentId = MimeKit.Utils.MimeUtils.GenerateMessageId());
         foreach (var part in attachment_parts)
         {
             multipart.Add(part);
